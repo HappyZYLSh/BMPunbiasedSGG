@@ -213,11 +213,10 @@ class PrototypeVAE(nn.Module):
             class_ids = []
             for k, i in zip(k_sample, Cmin):
                 k_num = int(k * class_num[i])
-                class_ids += [i for _ in range(k_num)]  # Shape: [batch_size = (20000-self.class_count[i]) / self.class_count[i]*class_num[i],]
-
-            # Step 5: Sample from prototypes based on class_ids
-            mu = prototypes[class_ids, :self.input_dim]  # Shape: [batch_size, input_dim]
-            log_sigma = prototypes[class_ids, self.input_dim:]  # Shape: [batch_size, input_dim]
+                class_ids+=[i for _ in range(k_num)]  # Shape: [batch_size = (20000-self.class_count[i]) / self.class_count[i]*class_num[i],]
+                # Step 5: Sample from prototypes based on class_ids
+                mu = prototypes[class_ids, :self.input_dim]  # Shape: [batch_size, input_dim]
+                log_sigma = prototypes[class_ids, self.input_dim:]  # Shape: [batch_size, input_dim]
 
         z = self.reparameterize(mu, log_sigma)  # Shape: [batch_size, input_dim]
 
@@ -231,7 +230,7 @@ class PrototypeVAE(nn.Module):
 
         # Step 7: Compute reconstruction loss
         loss = self.loss_function(mu, log_sigma, recon_x, recon_y)
-        return recon_x, mu, log_sigma, recon_y, Flag, loss
+        return recon_x, prototypes[:,:self.input_dim], prototypes[:,self.input_dim:], recon_y, Flag, loss
     
 class PositionalEncoding(nn.Module):
 
@@ -763,44 +762,13 @@ class BMP(nn.Module):
         
         # PrototypeVAE
         self.nstage = nstage
-        self.a_PrototypeVAE = PrototypeVAE(rel="attention",alpha=alpha,tau_maj_ratio=T_maj[0],q=q,nstage = nstage)
-        self.s_PrototypeVAE = PrototypeVAE(rel="spatial",alpha=alpha,tau_maj_ratio=T_maj[1],q=q,nstage = nstage)
-        self.c_PrototypeVAE = PrototypeVAE(rel="contacting",alpha=alpha,tau_maj_ratio=T_maj[2],q=q,nstage = nstage)
+        self.a_PrototypeVAE = PrototypeVAE(rel="attention",alpha=alpha,tau_maj_ratio=T_maj[0],q=q,n_stage = self.nstage)
+        self.s_PrototypeVAE = PrototypeVAE(rel="spatial",alpha=alpha,tau_maj_ratio=T_maj[1],q=q,n_stage = self.nstage)
+        self.c_PrototypeVAE = PrototypeVAE(rel="contacting",alpha=alpha,tau_maj_ratio=T_maj[2],q=q,n_stage = self.nstage)
 
     def forward(self, entry, phase='train',unc=False):
 
-        entry = self.object_classifier(entry, phase=phase, unc=unc)
-        # visual part
-        if not self.take_obj_mem_feat:
-            subj_rep = entry['features'][entry['pair_idx'][:, 0]]
-            obj_rep = entry['features'][entry['pair_idx'][:, 1]]
-        else:
-            subj_rep = entry['object_mem_features'][entry['pair_idx'][:, 0]]
-            obj_rep = entry['object_mem_features'][entry['pair_idx'][:, 1]]
 
-        subj_rep = self.subj_fc(subj_rep)
-        obj_rep = self.obj_fc(obj_rep)
-        vr = self.union_func1(entry['union_feat']) + self.conv(entry['spatial_masks'])
-        vr = self.vr_fc(vr.view(-1,256*7*7))
-        x_visual = torch.cat((subj_rep, obj_rep, vr), 1)
-
-        # semantic part
-        subj_class = entry['pred_labels'][entry['pair_idx'][:, 0]]
-        obj_class = entry['pred_labels'][entry['pair_idx'][:, 1]]
-
-        subj_emb = self.obj_embed(subj_class)
-        obj_emb = self.obj_embed2(obj_class)
-        x_semantic = torch.cat((subj_emb, obj_emb), 1)
-
-        rel_features = torch.cat((x_visual, x_semantic), dim=1)
-
-        # Spatial-Temporal Transformer
-        global_output,rel_features,mem_features, _, _ = \
-        self.glocal_transformer(features=rel_features, im_idx=entry['im_idx'], memory=self.rel_memory)
-
-        
-        entry["rel_features"] = rel_features
-        entry['rel_mem_features'] = mem_features
         if self.a_PrototypeVAE.prototypes_base and self.s_PrototypeVAE.prototypes_base and self.c_PrototypeVAE.prototypes_base:
             attention_label = torch.tensor(entry["attention_gt"], dtype=torch.long).squeeze()
             # bce loss
@@ -828,49 +796,68 @@ class BMP(nn.Module):
             recon_x2, mu2, log_sigma2,recon_y2,Flag2,loss2 = self.s_PrototypeVAE(class_num = class_num["spatial"])
 
             recon_x3, mu3, log_sigma3,recon_y3,Flag3,loss3 = self.c_PrototypeVAE(class_num = class_num["contacting"])
-            entry["attention_maj"] = 1-Flag1
-            entry["spatial_maj"] = 1-Flag2
-            entry["contacting_maj"] = 1-Flag3
+            entry["attention_maj"] = Flag1
+            entry["spatial_maj"] = Flag2
+            entry["contacting_maj"] = Flag3
 
 
-            if len(recon_y1)>0:
-                # x1 = 
-                entry["recon_attention_f"] = recon_x1
-                entry["recon_attention_gt"] = recon_y1
-                entry["recon_attention_log_sigma"] = log_sigma1
-                entry["recon_attention_mu"] = mu1  
-                entry["flag1"] = True
-                entry["loss1"] = loss1
+
+            entry["recon_attention_f"] = recon_x1
+            entry["recon_attention_gt"] = recon_y1
+            entry["recon_attention_log_sigma"] = log_sigma1
+            entry["recon_attention_mu"] = mu1  
+            entry["loss1"] = loss1
+
+
+
+            entry["recon_spatial_f"] = recon_x2
+            entry["recon_spatial_mu"] = mu2
+            entry["recon_spatial_gt"] = [ [y] for y in recon_y2]
+            entry["recon_spatial_log_sigma"] = log_sigma2
+            entry["loss2"] = loss2
+
+            entry["recon_contacting_f"] = recon_x3
+            entry["recon_contacting_mu"] = mu3
+            entry["recon_contacting_log_sigma"] = log_sigma3
+            entry["recon_contacting_gt"] = [ [y] for y in recon_y3]
+            entry["loss3"] = loss3
+
+        else:
+            entry = self.object_classifier(entry, phase=phase, unc=unc)
+            # visual part
+            if not self.take_obj_mem_feat:
+                subj_rep = entry['features'][entry['pair_idx'][:, 0]]
+                obj_rep = entry['features'][entry['pair_idx'][:, 1]]
             else:
-                entry["flag1"] = False
+                subj_rep = entry['object_mem_features'][entry['pair_idx'][:, 0]]
+                obj_rep = entry['object_mem_features'][entry['pair_idx'][:, 1]]
 
+            subj_rep = self.subj_fc(subj_rep)
+            obj_rep = self.obj_fc(obj_rep)
+            vr = self.union_func1(entry['union_feat']) + self.conv(entry['spatial_masks'])
+            vr = self.vr_fc(vr.view(-1,256*7*7))
+            x_visual = torch.cat((subj_rep, obj_rep, vr), 1)
 
-            if len(recon_y2)>0:
-                entry["recon_spatial_f"] = recon_x2
-                entry["recon_spatial_mu"] = mu2
-                entry["recon_spatial_gt"] = [ [y] for y in recon_y2]
-                entry["recon_spatial_log_sigma"] = log_sigma2
-                entry["flag2"] = True
-                entry["loss2"] = loss2
-            else:
-                entry["flag2"] = False
+            # semantic part
+            subj_class = entry['pred_labels'][entry['pair_idx'][:, 0]]
+            obj_class = entry['pred_labels'][entry['pair_idx'][:, 1]]
 
-            if len(recon_y3)>0:
-                entry["recon_contacting_f"] = recon_x3
-                entry["recon_contacting_mu"] = mu3
-                entry["recon_contacting_log_sigma"] = log_sigma3
-                entry["recon_contacting_gt"] = [ [y] for y in recon_y3]
-                entry["flag3"] = True
-                entry["loss3"] = loss3
-            else:
-                entry["flag3"] = False
+            subj_emb = self.obj_embed(subj_class)
+            obj_emb = self.obj_embed2(obj_class)
+            x_semantic = torch.cat((subj_emb, obj_emb), 1)
 
+            rel_features = torch.cat((x_visual, x_semantic), dim=1)
 
+            # Spatial-Temporal Transformer
+            global_output,rel_features,mem_features, _, _ = \
+            self.glocal_transformer(features=rel_features, im_idx=entry['im_idx'], memory=self.rel_memory)
+
+            
+            entry["rel_features"] = rel_features
+            entry['rel_mem_features'] = mem_features
         if self.rel_head == 'gmm':
             if not unc:
-                entry["attention_distribution"] = self.a_rel_compress(global_output,phase,unc)
-                entry["spatial_distribution"] = self.s_rel_compress(global_output,phase,unc)
-                entry["contacting_distribution"] = self.c_rel_compress(global_output,phase,unc)
+
                 if self.a_PrototypeVAE.prototypes_base and self.s_PrototypeVAE.prototypes_base and self.c_PrototypeVAE.prototypes_base:
                     if len(recon_y1)>0:
 
@@ -881,6 +868,10 @@ class BMP(nn.Module):
                     if len(recon_y3)>0:
 
                         entry["recon_contacting_distribution"] = self.c_rel_compress(recon_x3,phase,unc)
+                else:
+                    entry["attention_distribution"] = self.a_rel_compress(global_output,phase,unc)
+                    entry["spatial_distribution"] = self.s_rel_compress(global_output,phase,unc)
+                    entry["contacting_distribution"] = self.c_rel_compress(global_output,phase,unc)
             else:
                 entry["attention_al_uc"], entry["attention_ep_uc"] = self.a_rel_compress(global_output,phase,unc)
                 entry["spatial_al_uc"], entry["spatial_ep_uc"] = self.s_rel_compress(global_output,phase,unc)

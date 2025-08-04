@@ -17,10 +17,10 @@ from lib.Uncertainty import *
 from lib.Memory import *
 from dataloader.action_genome import AG, cuda_collate_fn
 from lib.object_detector import detector
-from lib.config import Config
+from lib.config_bmp import Config
 from lib.evaluation_recall import BasicSceneGraphEvaluator
 from lib.AdamW import AdamW
-from BMPunbiasedSGG.lib.BMP import BMP
+from lib.BMP import BMP
 from lib.ds_track import get_sequence
 from lib.MFL import MinorityfocalLossAndConloss
 
@@ -90,9 +90,8 @@ evaluator =BasicSceneGraphEvaluator(mode=conf.mode,
                                     # output_dir = conf.save_path,
                                     constraint='with')
 
-
 ## loading the baseModel
-model_path = "data/tempura/{}/best_Mrecall_model.tar".format(conf.mode)
+model_path = "/media/amax/datasets/lsh/unbiasedSGG/Data/dd1/tempura/predcls/best_Mrecall_model.tar"
 basemodel_ckpt = torch.load(model_path, map_location=gpu_device)
 newmodel_ckpt = model.state_dict()
 # ckpt = torch.load(conf.model_path, map_location=gpu_device)
@@ -106,9 +105,6 @@ for name,param in basemodel_ckpt["state_dict"].items():
         newmodel_ckpt[name] = param
         print(name)
 model.load_state_dict(newmodel_ckpt, strict=True)
-
-
-
 
 # loss function, default Multi-label margin loss
 weights = torch.ones(len(model.obj_classes))
@@ -176,32 +172,30 @@ if not conf.no_logging:
     log_val.write('*'*60+'\n')
 
 for epoch in range(conf.nepoch):
+    if model.a_PrototypeVAE.prototypes_base and model.s_PrototypeVAE.prototypes_base and model.c_PrototypeVAE.prototypes_base:
+        
+        print("🔒 冻结所有层...")
+        for name, param in model.named_parameters():
+            param.requires_grad = False 
+        layers_to_unfreeze = [
+            "a_PrototypeVAE",     
+            "s_PrototypeVAE",     
+            "c_PrototypeVAE",     
+            "a_rel_compress",     
+            "s_rel_compress",     
+            "c_rel_compress",     
+        ]
+
+        for name, param in model.named_parameters():
+            for target_layer in layers_to_unfreeze:
+                if target_layer in name:  
+                    param.requires_grad = True
+                    break  
         
     unc_vals = uncertainty_values(obj_classes=len(model.obj_classes),
                                     attention_class_num=model.attention_class_num,
                                     spatial_class_num=model.spatial_class_num,
                                     contact_class_num=model.contact_class_num)
-    if model.a_PrototypeVAE.prototypes_base and model.s_PrototypeVAE.prototypes_base and model.c_PrototypeVAE.prototypes_base:
-        for name, param in model.named_parameters():
-            param.requires_grad = False  
-
-        layers_to_unfreeze = [
-            "a_PrototypeVAE",     
-            "s_PrototypeVAE"         
-            "c_PrototypeVAE"          
-            "a_rel_compress"         
-            "s_rel_compress"          
-            "c_rel_compress"         
-
-        ]
-
-        for name, param in model.named_parameters():
-            for target_layer in layers_to_unfreeze:
-                if target_layer in name:  # 如果目标层名包含在当前参数名中
-                    param.requires_grad = True
-                    print(f"✅ Unfrozen: {name}")
-                    break  
-            
     model.train()
     object_detector.is_train = True
     
@@ -227,107 +221,46 @@ for epoch in range(conf.nepoch):
             get_sequence(entry, gt_annotation, (im_info[0][:2]/im_info[0,2]).cpu().data,conf.mode)
 
         pred = model(entry, phase='train', unc=False)
-
-        if conf.obj_unc or conf.rel_unc or conf.obj_mem_compute or conf.rel_mem_compute :
-            uncertainty_computation(data,AG_dataset_train,
-                                    object_detector,model,unc_vals,gpu_device,
-                                    conf.save_path,
-                                    obj_unc=conf.obj_unc,obj_mem=conf.obj_mem_compute,
-                                    background_mem=False,rel_unc=conf.rel_unc,
-                                    tracking=conf.tracking)
-
-        attention_distribution = pred["attention_distribution"]
-        spatial_distribution = pred["spatial_distribution"]
-        contact_distribution = pred["contacting_distribution"]
-
-        if conf.rel_head == 'gmm':
-            attention_distribution = torch.log(attention_distribution + 1e-12)
-
-        if conf.obj_head == 'gmm' and conf.mode != 'predcls':
-            pred['distribution'] = torch.log(pred['distribution'] + 1e-12)
-        
-        attention_label = torch.tensor(pred["attention_gt"], dtype=torch.long).to(device=attention_distribution.device).squeeze()
-        if conf.mlm:
-            # multi-label margin loss or adaptive loss
-            spatial_label = -torch.ones([len(pred["spatial_gt"]), 6], dtype=torch.long).to(device=attention_distribution.device)
-            contact_label = -torch.ones([len(pred["contacting_gt"]), 17], dtype=torch.long).to(device=attention_distribution.device)
-            for i in range(len(pred["spatial_gt"])):
-                spatial_label[i, : len(pred["spatial_gt"][i])] = torch.tensor(pred["spatial_gt"][i])
-                contact_label[i, : len(pred["contacting_gt"][i])] = torch.tensor(pred["contacting_gt"][i])
-
-        else:
-            # bce loss
-            spatial_label = torch.zeros([len(pred["spatial_gt"]), 6], dtype=torch.float32).to(device=attention_distribution.device)
-            contact_label = torch.zeros([len(pred["contacting_gt"]), 17], dtype=torch.float32).to(device=attention_distribution.device)
-            for i in range(len(pred["spatial_gt"])):
-                spatial_label[i, pred["spatial_gt"][i]] = 1
-                contact_label[i, pred["contacting_gt"][i]] = 1
-
         losses = {}
-        if conf.mode == 'sgcls' or conf.mode == 'sgdet':
-            losses['object_loss'] = ce_loss_obj(pred['distribution'], pred['labels'])
-            loss_weighting = conf.obj_loss_weighting
-            if loss_weighting is not None:
-                num = torch.exp(unc_vals.obj_batch_unc[loss_weighting].sum(-1))
-                den = num.sum()
-                weights =  1 + (num/den).to(device=gpu_device)
-                losses['object_loss'] = weights*losses['object_loss']
-            losses['object_loss'] = losses['object_loss'].mean()
-            if conf.obj_con_loss:
-                losses['object_contrastive_loss'] = conf.lambda_con*con_loss(pred['object_mem_features'], pred['labels'])
-
-        losses["attention_relation_loss"] = ce_loss_rel(attention_distribution, attention_label)
-        if conf.mlm:
-            losses["spatial_relation_loss"] = mlm_loss(spatial_distribution, spatial_label)
-            losses["contacting_relation_loss"] = mlm_loss(contact_distribution, contact_label)
-
-        else:
-            losses["spatial_relation_loss"] = bce_loss(spatial_distribution, spatial_label)
-            losses["contacting_relation_loss"] = bce_loss(contact_distribution, contact_label)
-        
-        loss_weighting = conf.rel_loss_weighting
-        
-        for rel in ['attention','spatial','contacting']:
-            
-            if loss_weighting is not None:
-                num = torch.exp(unc_vals.rel_batch_unc[rel][loss_weighting].sum(-1))
-                den = num.sum() + 1e-12
-                weights =  1 + (num/den).to(device=gpu_device)
-                
-                if rel != 'attention':
-                    weights = weights.unsqueeze(-1).repeat(1,losses[rel+'_relation_loss'].shape[-1])
-
-                losses[rel+'_relation_loss'] = weights*losses[rel+'_relation_loss']
-            losses[rel+'_relation_loss'] = losses[rel+'_relation_loss'].mean()
-
-        ### base loss + con_loss + mf_loss
         if model.a_PrototypeVAE.prototypes_base and model.s_PrototypeVAE.prototypes_base and model.c_PrototypeVAE.prototypes_base:
-            if pred["flag1"]:
+            count = 0
+            for r in ["recon_attention_gt","recon_spatial_gt","recon_contacting_gt"]:
+                # print(r)
+                # print(pred[r])
+                count+=len(pred[r])
+            if count==0:
+                continue
+            
+            if len(pred["recon_attention_gt"])>0:
 
                 recon_attention_distribution = pred["recon_attention_distribution"]
                 if conf.rel_head == 'gmm':
                     recon_attention_distribution = torch.log(recon_attention_distribution + 1e-12)
-                recon_attention_label = torch.tensor(pred["recon_attention_gt"], dtype=torch.long).to(device=attention_distribution.device).squeeze()
-                # try:
-                #     losses["recon_attention_relation_loss"] = ce_loss_rel(recon_attention_distribution, recon_attention_label).mean()
-                # except:
-                #     print(f'recon_attention_distribution: {recon_attention_distribution.shape}')    
-                #     print(f'recon_attention_label: {recon_attention_label.shape}')   
-                # if recon_attention_label.dim()==0:
-                #     recon_attention_label = recon_attention_label.unsqueeze(0)
-                #     print(recon_attention_distribution)
-                #     print(recon_attention_label)
+
+
+                recon_attention_label = torch.tensor(pred["recon_attention_gt"], dtype=torch.long).to(device=attention_distribution.device).view(-1)
+                
+                
+                # print(recon_attention_distribution.shape,recon_attention_label.shape)
 
                 losses["recon_attention_relation_loss"] = ce_loss_rel(recon_attention_distribution, recon_attention_label).mean()*conf.lambda_base
 
-                n_samples = recon_attention_label.shape[0]
-                labels = torch.zeros(n_samples, 3, dtype=torch.float32).to(recon_attention_distribution.device)
-                labels.scatter_(1, recon_attention_label.unsqueeze(1), 1.0)
+                labels = torch.zeros(len(recon_attention_label),3).to(device=attention_distribution.device)
+                # print(labels.shape)
+                for i,l in enumerate(pred["recon_attention_gt"]):
+                    labels[i,l] = 1
+
+
                 mu = entry["recon_attention_mu"]
                 log_sigma = entry["recon_attention_log_sigma"]
-                losses["recon_mfl_attention_loss"],losses["con_loss_attention"] = mfc_a(recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma)
+                mfc_a.set_flag(entry["attention_maj"].reshape(-1,3))
 
-            if pred["flag2"]:
+                # for d in [recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma]:
+                #     print(d.shape)
+                # print(entry["attention_maj"])
+                losses["recon_mfl_attention_loss"],losses["con_loss_attention"] = mfc_a(recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma)
+            if len(pred["recon_spatial_gt"])>0:
+                mfc_s.set_flag(entry["spatial_maj"])
 
                 recon_spatial_distribution = pred["recon_spatial_distribution"]
                 recon_spatial_label = torch.zeros([len(pred["recon_spatial_gt"]), 6], dtype=torch.float32).to(device=attention_distribution.device)
@@ -345,8 +278,13 @@ for epoch in range(conf.nepoch):
                 losses["recon_spatial_relation_loss"] = bce_loss(recon_spatial_distribution, recon_spatial_label).mean()
                 mu = entry["recon_spatial_mu"]
                 log_sigma = entry["recon_spatial_log_sigma"]
+
+                # for d in [recon_spatial_distribution,recon_spatial_label,entry["recon_spatial_f"],mu,log_sigma]:
+                #     print(d.shape)
+                # print(entry["spatial_maj"])
                 losses["recon_mfl_spatial_loss"],losses["con_loss_spatial"]= mfc_s(recon_spatial_distribution,recon_spatial_label,entry["recon_spatial_f"],mu,log_sigma)
-            if pred["flag3"]:
+            if len(pred["recon_contacting_gt"])>0:
+                mfc_s.set_flag(entry["contacting_maj"])
 
                 recon_contact_distribution = pred["recon_contacting_distribution"]
                 recon_contact_label = torch.zeros([len(pred["recon_contacting_gt"]), 17], dtype=torch.float32).to(device=attention_distribution.device)
@@ -361,11 +299,77 @@ for epoch in range(conf.nepoch):
                 losses["recon_contacting_relation_loss"] = bce_loss(recon_contact_distribution, recon_contact_label).mean()
                 mu = entry["recon_contacting_mu"]
                 log_sigma = entry["recon_contacting_log_sigma"]
-                losses["recon_mfl_contacting_loss"],losses["con_loss_contacting"] = mfc_s(recon_contact_distribution,recon_contact_label,entry["recon_contacting_f"],mu,log_sigma)
+                losses["recon_mfl_contacting_loss"],losses["con_loss_contacting"] = mfc_c(recon_contact_distribution,recon_contact_label,entry["recon_contacting_f"],mu,log_sigma)
+        else:
+            if conf.obj_unc or conf.rel_unc or conf.obj_mem_compute or conf.rel_mem_compute :
+                uncertainty_computation(data,AG_dataset_train,
+                                        object_detector,model,unc_vals,gpu_device,
+                                        conf.save_path,
+                                        obj_unc=conf.obj_unc,obj_mem=conf.obj_mem_compute,
+                                        background_mem=False,rel_unc=conf.rel_unc,
+                                        tracking=conf.tracking)
 
-             
+            attention_distribution = pred["attention_distribution"]
+            spatial_distribution = pred["spatial_distribution"]
+            contact_distribution = pred["contacting_distribution"]
 
+            if conf.rel_head == 'gmm':
+                attention_distribution = torch.log(attention_distribution + 1e-12)
 
+            if conf.obj_head == 'gmm' and conf.mode != 'predcls':
+                pred['distribution'] = torch.log(pred['distribution'] + 1e-12)
+            
+            attention_label = torch.tensor(pred["attention_gt"], dtype=torch.long).to(device=attention_distribution.device).squeeze()
+            if conf.mlm:
+                # multi-label margin loss or adaptive loss
+                spatial_label = -torch.ones([len(pred["spatial_gt"]), 6], dtype=torch.long).to(device=attention_distribution.device)
+                contact_label = -torch.ones([len(pred["contacting_gt"]), 17], dtype=torch.long).to(device=attention_distribution.device)
+                for i in range(len(pred["spatial_gt"])):
+                    spatial_label[i, : len(pred["spatial_gt"][i])] = torch.tensor(pred["spatial_gt"][i])
+                    contact_label[i, : len(pred["contacting_gt"][i])] = torch.tensor(pred["contacting_gt"][i])
+
+            else:
+                # bce loss
+                spatial_label = torch.zeros([len(pred["spatial_gt"]), 6], dtype=torch.float32).to(device=attention_distribution.device)
+                contact_label = torch.zeros([len(pred["contacting_gt"]), 17], dtype=torch.float32).to(device=attention_distribution.device)
+                for i in range(len(pred["spatial_gt"])):
+                    spatial_label[i, pred["spatial_gt"][i]] = 1
+                    contact_label[i, pred["contacting_gt"][i]] = 1
+            if conf.mode == 'sgcls' or conf.mode == 'sgdet':
+                losses['object_loss'] = ce_loss_obj(pred['distribution'], pred['labels'])
+                loss_weighting = conf.obj_loss_weighting
+                if loss_weighting is not None:
+                    num = torch.exp(unc_vals.obj_batch_unc[loss_weighting].sum(-1))
+                    den = num.sum()
+                    weights =  1 + (num/den).to(device=gpu_device)
+                    losses['object_loss'] = weights*losses['object_loss']
+                losses['object_loss'] = losses['object_loss'].mean()
+                if conf.obj_con_loss:
+                    losses['object_contrastive_loss'] = conf.lambda_con*con_loss(pred['object_mem_features'], pred['labels'])
+
+            losses["attention_relation_loss"] = ce_loss_rel(attention_distribution, attention_label)
+            if conf.mlm:
+                losses["spatial_relation_loss"] = mlm_loss(spatial_distribution, spatial_label)
+                losses["contacting_relation_loss"] = mlm_loss(contact_distribution, contact_label)
+
+            else:
+                losses["spatial_relation_loss"] = bce_loss(spatial_distribution, spatial_label)
+                losses["contacting_relation_loss"] = bce_loss(contact_distribution, contact_label)
+            
+            loss_weighting = conf.rel_loss_weighting
+            
+            for rel in ['attention','spatial','contacting']:
+                
+                if loss_weighting is not None:
+                    num = torch.exp(unc_vals.rel_batch_unc[rel][loss_weighting].sum(-1))
+                    den = num.sum() + 1e-12
+                    weights =  1 + (num/den).to(device=gpu_device)
+                    
+                    if rel != 'attention':
+                        weights = weights.unsqueeze(-1).repeat(1,losses[rel+'_relation_loss'].shape[-1])
+
+                    losses[rel+'_relation_loss'] = weights*losses[rel+'_relation_loss']
+                losses[rel+'_relation_loss'] = losses[rel+'_relation_loss'].mean()
 
 
         optimizer.zero_grad()
