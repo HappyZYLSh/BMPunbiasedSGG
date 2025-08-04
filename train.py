@@ -91,6 +91,24 @@ evaluator =BasicSceneGraphEvaluator(mode=conf.mode,
                                     constraint='with')
 
 
+## loading the baseModel
+model_path = "data/tempura/{}/best_Mrecall_model.tar".format(conf.mode)
+basemodel_ckpt = torch.load(model_path, map_location=gpu_device)
+newmodel_ckpt = model.state_dict()
+# ckpt = torch.load(conf.model_path, map_location=gpu_device)
+for name,param in newmodel_ckpt.items():
+    if name in basemodel_ckpt["state_dict"]:
+        param = basemodel_ckpt["state_dict"][name]
+    else:
+        print(name)
+for name,param in basemodel_ckpt["state_dict"].items():
+    if name in newmodel_ckpt:
+        newmodel_ckpt[name] = param
+        print(name)
+model.load_state_dict(newmodel_ckpt, strict=True)
+
+
+
 
 # loss function, default Multi-label margin loss
 weights = torch.ones(len(model.obj_classes))
@@ -158,10 +176,32 @@ if not conf.no_logging:
     log_val.write('*'*60+'\n')
 
 for epoch in range(conf.nepoch):
+        
     unc_vals = uncertainty_values(obj_classes=len(model.obj_classes),
                                     attention_class_num=model.attention_class_num,
                                     spatial_class_num=model.spatial_class_num,
                                     contact_class_num=model.contact_class_num)
+    if model.a_PrototypeVAE.prototypes_base and model.s_PrototypeVAE.prototypes_base and model.c_PrototypeVAE.prototypes_base:
+        for name, param in model.named_parameters():
+            param.requires_grad = False  
+
+        layers_to_unfreeze = [
+            "a_PrototypeVAE",     
+            "s_PrototypeVAE"         
+            "c_PrototypeVAE"          
+            "a_rel_compress"         
+            "s_rel_compress"          
+            "c_rel_compress"         
+
+        ]
+
+        for name, param in model.named_parameters():
+            for target_layer in layers_to_unfreeze:
+                if target_layer in name:  # 如果目标层名包含在当前参数名中
+                    param.requires_grad = True
+                    print(f"✅ Unfrozen: {name}")
+                    break  
+            
     model.train()
     object_detector.is_train = True
     

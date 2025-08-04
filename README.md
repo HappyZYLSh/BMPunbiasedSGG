@@ -45,7 +45,11 @@ We use the dataset [Action Genome](https://www.actiongenome.org/#download) to tr
 
  In the experiments for SGCLS/SGDET, we only keep bounding boxes with short edges larger than 16 pixels. Please download the file [object_bbox_and_relationship_filtersmall.pkl](https://drive.google.com/file/d/19BkAwjCw5ByyGyZjFo174Oc3Ud56fkaT/view?usp=sharing) and put it in the ``dataloader``
 
-## Train 
+## Base model
+
+[TEMPURA](https://github.com/sayaknag/unbiasedSGG.git)
+
+## Train
 
 + For PREDCLS:
 
