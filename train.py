@@ -259,6 +259,9 @@ for epoch in range(conf.nepoch):
                 #     print(d.shape)
                 # print(entry["attention_maj"])
                 losses["recon_mfl_attention_loss"],losses["con_loss_attention"] = mfc_a(recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma)
+                losses["recon_mfl_attention_loss"] = losses["recon_mfl_attention_loss"]*conf.lambda_mfl
+                losses["con_loss_attention"] = losses["con_loss_attention"]*conf.lambda_consist
+            
             if len(pred["recon_spatial_gt"])>0:
                 mfc_s.set_flag(entry["spatial_maj"])
 
@@ -283,6 +286,9 @@ for epoch in range(conf.nepoch):
                 #     print(d.shape)
                 # print(entry["spatial_maj"])
                 losses["recon_mfl_spatial_loss"],losses["con_loss_spatial"]= mfc_s(recon_spatial_distribution,recon_spatial_label,entry["recon_spatial_f"],mu,log_sigma)
+                losses["recon_mfl_spatial_loss"] = losses["recon_mfl_spatial_loss"]*conf.lambda_mfl
+                losses["con_loss_spatial"] = losses["con_loss_spatial"]*conf.lambda_consist
+
             if len(pred["recon_contacting_gt"])>0:
                 mfc_s.set_flag(entry["contacting_maj"])
 
@@ -300,6 +306,8 @@ for epoch in range(conf.nepoch):
                 mu = entry["recon_contacting_mu"]
                 log_sigma = entry["recon_contacting_log_sigma"]
                 losses["recon_mfl_contacting_loss"],losses["con_loss_contacting"] = mfc_c(recon_contact_distribution,recon_contact_label,entry["recon_contacting_f"],mu,log_sigma)
+                losses["recon_mfl_contacting_loss"] = losses["recon_mfl_contacting_loss"]*conf.lambda_mfl
+                losses["con_loss_contacting"] = losses["con_loss_contacting"]*conf.lambda_consist
         else:
             if conf.obj_unc or conf.rel_unc or conf.obj_mem_compute or conf.rel_mem_compute :
                 uncertainty_computation(data,AG_dataset_train,
