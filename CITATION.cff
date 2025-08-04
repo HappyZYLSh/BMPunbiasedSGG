@@ -1,0 +1,35 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: BMP
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Shenghao
+    family-names: Li
+    email: 2023170761@mail.hfut.edu.cn
+repository-code: 'https://github.com/HappyZYLSh/BMPunbiasedSGG'
+abstract: >-
+  The inherent challenges in dynamic scene graph generation,
+  such as long-tailed distribution of the visual
+  relationships, noisy annotations and temporal fluctuation
+  of model predictions, makes existing methods prone to
+  generate biased scene graphs.This module introduces
+  minority focal loss, which enhances their impacts by
+  considering positive/negative factors and prototype
+  probability. To find scarce hard positive samples, we use
+  a progressive way. Then, these progressive samples balance
+  the minority prototypes step-by- step to ensure their
+  class separability. Extensive experiments demonstrate that
+  our BMP achieves state-of-the-art performance on two scene
+  graph generation datasets, including the Action Genome and
+  the Visual Genome..
+keywords:
+  - UnbiasedSGG
+license: AAL
+commit: XXXXXXXX
+version: '1.0'
+date-released: '2025-08-04'
