@@ -45,7 +45,7 @@ We use the dataset [Action Genome](https://www.actiongenome.org/#download) to tr
 
  In the experiments for SGCLS/SGDET, we only keep bounding boxes with short edges larger than 16 pixels. Please download the file [object_bbox_and_relationship_filtersmall.pkl](https://drive.google.com/file/d/19BkAwjCw5ByyGyZjFo174Oc3Ud56fkaT/view?usp=sharing) and put it in the ``dataloader``
 
-## Train
+## Train 
 
 + For PREDCLS:
 
@@ -67,6 +67,7 @@ python train.py -mode sgcls -datasize large -data_path $DATAPATH -rel_mem_comput
 python train.py -mode sgdet -datasize large -data_path $DATAPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.5  -rel_head gmm -obj_head linear -obj_con_loss euc_con  -lambda_con 1  -eos_coef 1 -K 4 -tracking -lr 1e-5  -nstage 6 -alpha 0.05 -positive_gamma 0.5 -negtive_gamma 2 -lambda_consist 100 -lambda_mf 2 -lambda_base 1 -save_path output/ 
 
 ```
+
 
 ## Evaluation
 

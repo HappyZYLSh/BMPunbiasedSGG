@@ -47,7 +47,7 @@ class PrototypeVAE(nn.Module):
             nn.ReLU(),
             nn.Linear(self.hidden_dim1, self.hidden_dim1),
             nn.ReLU(),
-            nn.Linear(self.hidden_dim1, input_dim * 2)  # mu and log_sigma
+            nn.Linear(self.hidden_dim1, input_dim*2)  # mu 
         )
         
         # Decoder: from Gaussian prototypes to generated samples
@@ -83,25 +83,47 @@ class PrototypeVAE(nn.Module):
         prototypes = self.encoder(self.prototypes_base[self.rel])
         return prototypes
 
-    def compute_euclidean_distance_matrix(self, P1, P2):
+    def compute_KL_distance_matrix(self, P1, P2):
         """
-        Compute the n1×n2 Euclidean distance matrix between two tensors P1 (n1, d) and P2 (n2, d).
+        Compute the n1×n2 Kullback–Leibler (KL) Divergence  matrix between two tensors P1 (n1, 2*d) and P2 (n2, 2*d).
         """
-        n1, d = P1.shape
-        n2, _ = P2.shape
-        
-        S1 = torch.sum(P1 **2, dim=1) # Shape: (n1,)
-        S2 = torch.sum(P2 **2, dim=1)  # Shape: (n2,)
-        
-        S1_matrix = S1.unsqueeze(1).expand(n1, n2)  # Shape: (n1, n2)
-        S2_matrix = S2.unsqueeze(0).expand(n1, n2)  # Shape: (n1, n2)
-        
-        sum_sq = S1_matrix + S2_matrix  # Shape: (n1, n2)
-        dot_product = torch.matmul(P1, P2.transpose(1, 0))  # Shape: (n1, n2)
-        
-        squared_dist = sum_sq - 2 * dot_product  # Shape: (n1, n2)
-        distance_matrix = torch.sqrt(squared_dist + 1e-6)  # Shape: (n1, n2), with numerical stability
-        return distance_matrix
+        mu1 = P1[:,:self.input_dim]
+        sigma1_sq = torch.exp(0.5 * P1[:,self.input_dim:])
+
+        mu2 = P2[:,:self.input_dim]
+        sigma2_sq = torch.exp(0.5 * P2[:,self.input_dim:])
+
+        n1, d = mu1.shape
+        n2, d2 = mu2.shape
+
+        assert d == d2, "特征维度 d 必须相同"
+        assert sigma1_sq.shape == mu1.shape, "sigma1_sq 必须与 mu1 同形状"
+        assert sigma2_sq.shape == mu2.shape, "sigma2_sq 必须与 mu2 同形状"
+
+        # 利用广播机制计算所有 (i,j) 对
+        # mu1:    [n1, d]
+        # mu2:    [n2, d] --> 扩展为 [1, n2, d]
+        # sigma1_sq: [n1, d] --> 扩展为 [n1, 1, d]
+        # sigma2_sq: [n2, d] --> 扩展为 [1, n2, d]
+
+        mu1_exp = mu1.unsqueeze(1)      # shape: (n1, 1, d)
+        mu2_exp = mu2.unsqueeze(0)      # shape: (1, n2, d)
+
+        sigma1_sq_exp = sigma1_sq.unsqueeze(1)  # shape: (n1, 1, d)
+        sigma2_sq_exp = sigma2_sq.unsqueeze(0)  # shape: (1, n2, d)
+
+        # KL 散度的三个部分
+        term1 = torch.log(sigma2_sq_exp / (sigma1_sq_exp + 1e-12))  # log(σ2² / σ1²)
+        term2 = sigma1_sq_exp / (sigma2_sq_exp + 1e-12)             # σ1² / σ2²
+        term3 = (mu2_exp - mu1_exp) **2 / (sigma2_sq_exp + 1e-12)  # (μ2 - μ1)² / σ2²
+
+        # 按维度求和：对 d 求和
+        sum_term1 = torch.sum(term1, dim=2)  # shape: (n1, n2)
+        sum_term2 = torch.sum(term2, dim=2)
+        sum_term3 = torch.sum(term3, dim=2)
+
+        kl_matrix = 0.5 * (sum_term1 + sum_term2 + sum_term3 - d)  # shape: (n1, n2)
+        return kl_matrix
 
     def update_minority_prototypes(self, mu_log_sigma, Cmin=None, Cmaj=None):
         """
@@ -110,9 +132,9 @@ class PrototypeVAE(nn.Module):
         alpha = self.alpha
         q = self.q
 
-        prototype_matrix = self.compute_euclidean_distance_matrix(
-            mu_log_sigma[Cmin, :][:, :self.input_dim],
-            mu_log_sigma[Cmaj, :][:, :self.input_dim]
+        prototype_matrix = self.compute_KL_distance_matrix(
+            mu_log_sigma[Cmin, :],
+            mu_log_sigma[Cmaj, :]
         )  # Shape: [n_minor, n_major]
 
         # Find the nearest q majority prototypes for each minority prototype
@@ -142,7 +164,7 @@ class PrototypeVAE(nn.Module):
             mu_log_sigma[cls] = new_mu_sigma
 
         self.prototypes_gaussian[self.rel] = mu_log_sigma  # Shape: [num_classes, input_dim*2]
-        return
+        return mu_log_sigma
 
     def loss_function(self, mu, logvar, recon_x, recon_y):
         x_recon = recon_x  # Shape: [B*stage, d]
@@ -154,10 +176,10 @@ class PrototypeVAE(nn.Module):
         return recon_loss(x_recon, x) + 0.5 * kl_loss
 
     def forward(self, class_num):
-        mus = []
-        log_sigmas = []
-        recon_xs = []
-        recon_ys = []
+        # mus = []
+        # log_sigmas = []
+        # recon_xs = []
+        # recon_ys = []
         # Step 1: Identify majority and minority classes
         tau_maj_ratio = self.T_maj
 
@@ -175,48 +197,41 @@ class PrototypeVAE(nn.Module):
             Flag[0, mini] = 1
             
 
-        for _ in range(self.nstage):
+        for nn in range(self.nstage):
+            if nn==0:
 
-
-            # Step 2: Initialize Gaussian prototypes
-            prototypes = self.get_gaussian_prototypes()  # Shape: [num_classes, input_dim*2]
-            p = prototypes.detach().clone()
+                # Step 2: Initialize Gaussian prototypes
+                prototypes = self.get_gaussian_prototypes()  # Shape: [num_classes, input_dim*2]
+                p = prototypes.detach().clone()
 
             # Step 3: Update minority Gaussian prototypes and store in self.prototypes_gaussian
             if Cmaj and Cmin:
-                self.update_minority_prototypes(mu_log_sigma=prototypes, Cmaj=Cmaj, Cmin=Cmin)  # Shape: [num_classes, input_dim*2]
+                prototypes = self.update_minority_prototypes(mu_log_sigma=prototypes, Cmaj=Cmaj, Cmin=Cmin)  # Shape: [num_classes, input_dim*2]
 
             # Step 4: Compute sampling weights for minority classes and generate class indices
-            k_sample = [tau_maj_ratio * max(self.class_count) / self.class_count[i] for i in Cmin]
+            k_sample = [(20000-self.class_count[i]) / self.class_count[i] for i in Cmin]
             class_ids = []
             for k, i in zip(k_sample, Cmin):
-                k_num = int((k - 1) * class_num[i])
-                class_ids += [i for _ in range(k_num)]  # Shape: [batch_size,]
+                k_num = int(k * class_num[i])
+                class_ids += [i for _ in range(k_num)]  # Shape: [batch_size = (20000-self.class_count[i]) / self.class_count[i]*class_num[i],]
 
             # Step 5: Sample from prototypes based on class_ids
-            mu = prototypes[class_ids, :self.input_dim]  # Shape: [batch_size, latent_dim]
+            mu = prototypes[class_ids, :self.input_dim]  # Shape: [batch_size, input_dim]
             log_sigma = prototypes[class_ids, self.input_dim:]  # Shape: [batch_size, input_dim]
-            mus.append(mu)
-            log_sigmas.append(log_sigma)
-            z = self.reparameterize(mu, log_sigma)  # Shape: [batch_size, input_dim]
 
-            # Step 6: Generate synthetic samples
-            decoder_input = z
-            recon_x = self.decoder(decoder_input)  # Shape: [batch_size, input_dim]
-            recon_y = class_ids
-            recon_xs.append(recon_x)
-            recon_ys.extend(recon_y)
-            # Ensure the shapes are consistent
-            assert recon_x.shape[0] == len(recon_y), f"recon_x.shape[0]: {recon_x.shape[0]}, len(recon_y): {len(recon_y)}"
+        z = self.reparameterize(mu, log_sigma)  # Shape: [batch_size, input_dim]
 
-            # Step 7: Compute reconstruction loss
-        log_sigmas = torch.cat(log_sigmas,dim = 0)
-        mus = torch.cat(mus,dim = 0)
-        recon_xs = torch.cat(recon_xs,dim = 0)
-        recon_ys = recon_ys
+        # Step 6: Generate synthetic samples
+        decoder_input = z
+        recon_x = self.decoder(decoder_input)  # Shape: [batch_size, input_dim]
+        recon_y = class_ids
 
-        loss = self.loss_function(mus, log_sigmas, recon_xs, recon_ys)
-        return recon_xs, mus, log_sigmas, recon_ys, Flag, loss
+        # Ensure the shapes are consistent
+        assert recon_x.shape[0] == len(recon_y), f"recon_x.shape[0]: {recon_x.shape[0]}, len(recon_y): {len(recon_y)}"
+
+        # Step 7: Compute reconstruction loss
+        loss = self.loss_function(mu, log_sigma, recon_x, recon_y)
+        return recon_x, mu, log_sigma, recon_y, Flag, loss
     
 class PositionalEncoding(nn.Module):
 

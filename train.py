@@ -22,7 +22,7 @@ from lib.evaluation_recall import BasicSceneGraphEvaluator
 from lib.AdamW import AdamW
 from BMPunbiasedSGG.lib.BMP import BMP
 from lib.ds_track import get_sequence
-from lib.MFL import MinorityfocalLoss
+from lib.MFL import MinorityfocalLossAndConloss
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 np.warnings.filterwarnings('ignore', category=np.VisibleDeprecationWarning)
@@ -117,9 +117,9 @@ if conf.obj_con_loss == 'euc_con':
 elif conf.obj_con_loss == 'info_nce':
     con_loss = SupConLoss(temperature=0.1)
     con_loss.train()
-mfc_a = MinorityfocalLoss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
-mfc_s = MinorityfocalLoss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
-mfc_c = MinorityfocalLoss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
+mfc_a = MinorityfocalLossAndConloss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
+mfc_s = MinorityfocalLossAndConloss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
+mfc_c = MinorityfocalLossAndConloss(pos_gamma=conf.positive_gamma, neg_gamma=conf.negtive_gamma)
 
 # optimizer
 
@@ -277,7 +277,6 @@ for epoch in range(conf.nepoch):
                 #     recon_attention_label = recon_attention_label.unsqueeze(0)
                 #     print(recon_attention_distribution)
                 #     print(recon_attention_label)
-                losses["con_loss_attention"] = pred["loss1"]
 
                 losses["recon_attention_relation_loss"] = ce_loss_rel(recon_attention_distribution, recon_attention_label).mean()*conf.lambda_base
 
@@ -286,7 +285,7 @@ for epoch in range(conf.nepoch):
                 labels.scatter_(1, recon_attention_label.unsqueeze(1), 1.0)
                 mu = entry["recon_attention_mu"]
                 log_sigma = entry["recon_attention_log_sigma"]
-                losses["recon_mfl_attention_loss"] = mfc_a(recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma)
+                losses["recon_mfl_attention_loss"],losses["con_loss_attention"] = mfc_a(recon_attention_distribution,labels,entry["recon_attention_f"],mu,log_sigma)
 
             if pred["flag2"]:
 
@@ -302,12 +301,11 @@ for epoch in range(conf.nepoch):
                 # print(recon_spatial_distribution)
                 # print(spatial_distribution)
 
-                losses["con_loss_spatial"] = pred["loss2"]
 
                 losses["recon_spatial_relation_loss"] = bce_loss(recon_spatial_distribution, recon_spatial_label).mean()
                 mu = entry["recon_spatial_mu"]
                 log_sigma = entry["recon_spatial_log_sigma"]
-                losses["recon_mfl_spatial_loss"] = mfc_s(recon_spatial_distribution,recon_spatial_label,entry["recon_spatial_f"],mu,log_sigma)
+                losses["recon_mfl_spatial_loss"],losses["con_loss_spatial"]= mfc_s(recon_spatial_distribution,recon_spatial_label,entry["recon_spatial_f"],mu,log_sigma)
             if pred["flag3"]:
 
                 recon_contact_distribution = pred["recon_contacting_distribution"]
@@ -319,12 +317,11 @@ for epoch in range(conf.nepoch):
                         print(i)
                         print(f'contacting: {len(pred["recon_contacting_gt"])}')
                 # recon_contact_distribution = torch.sigmoid(recon_contact_distribution)
-                losses["con_loss_contacting"] = pred["loss3"]
                 
                 losses["recon_contacting_relation_loss"] = bce_loss(recon_contact_distribution, recon_contact_label).mean()
                 mu = entry["recon_contacting_mu"]
                 log_sigma = entry["recon_contacting_log_sigma"]
-                losses["recon_mfl_contacting_loss"] = mfc_s(recon_contact_distribution,recon_contact_label,entry["recon_contacting_f"],mu,log_sigma)
+                losses["recon_mfl_contacting_loss"],losses["con_loss_contacting"] = mfc_s(recon_contact_distribution,recon_contact_label,entry["recon_contacting_f"],mu,log_sigma)
 
              
 

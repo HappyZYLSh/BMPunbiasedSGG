@@ -54,7 +54,7 @@ class Config(object):
         parser.add_argument('-enc_layer', dest='enc_layer', help='spatial encoder layer', default=1, type=int)
         parser.add_argument('-dec_layer', dest='dec_layer', help='temporal decoder layer', default=3, type=int)
 
-        parser.add_argument('-nstage', help='stage number', default=6, type=int)
+        parser.add_argument('-nstage', help='nstage  is the num of updating protype', default=6, type=int)
 
         #logging arguments
         parser.add_argument('-log_iter', default=100, type=int)

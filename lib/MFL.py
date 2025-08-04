@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.linalg as LA
 
-class MinorityfocalLoss(nn.Module):
+class MinorityfocalLossAndConloss(nn.Module):
 
     def __init__(self, gamma=2,pos_gamma = 1,neg_gamma = 1, alpha=None, reduction='mean'):
         super().__init__()
@@ -36,6 +36,16 @@ class MinorityfocalLoss(nn.Module):
         log_pdf_per_dim = torch.log(coefficient) + torch.log(exponent)
         joint_log_pdf = torch.sum(log_pdf_per_dim, dim=2)
         return torch.exp(joint_log_pdf)
+    
+    def KL_consist_loss(self,pp,logits):
+        P = torch.softmax(pp,dim=1)
+        Q = logits
+        log_P = torch.log(P + 1e-10)      # shape: [n, c]
+        kl_div_per_element = P * (log_P - torch.log(Q + 1e-10))  # shape: [n, c]
+        kl_div_per_sample = torch.sum(kl_div_per_element, dim=1)  # shape: [n]
+        return kl_div_per_sample
+
+
 
     def forward(self, logits, targets, features, mu, var):
             # =============================
@@ -71,7 +81,7 @@ class MinorityfocalLoss(nn.Module):
                 if isinstance(attr_value, torch.Tensor):
                     setattr(self, attr_name, attr_value.to(device))
 
-        sigmoid_p = torch.sigmoid(logits)
+        sigmoid_p = torch.softmax(logits)
         p_t = 1 - ((targets * sigmoid_p) + ((1 - targets) * (1 - sigmoid_p)))
         pp = self.compute_pp(features, mu, var)
 
@@ -93,5 +103,7 @@ class MinorityfocalLoss(nn.Module):
             focal_loss = modulating_factor * alpha_t * ce_loss
         else:
             focal_loss = modulating_factor * ce_loss
-
-        return focal_loss.mean() if self.reduction == 'mean' else focal_loss.sum()
+        
+        con_loss = self.KL_consist_loss(pp,logits)
+        return focal_loss.mean() if self.reduction == 'mean' else focal_loss.sum(),con_loss
+    
