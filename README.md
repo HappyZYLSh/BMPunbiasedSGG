@@ -70,26 +70,26 @@ python train.py -mode sgdet -datasize large -data_path $DATAPATH -rel_mem_comput
 
 ## Evaluation
 
-[Trained Models](https://drive.google.com/drive/folders/1m1xSUbqBELpogHRl_4J3ED7tlyp3ebv8?usp=share_link)
+[Trained Models]()
 
 + For PREDCLS:
 
 ```
-python test.py -mode predcls -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.5  -rel_head gmm -obj_head linear -K 6   
+python test.py -mode predcls -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.5  -rel_head gmm -obj_head linear -K 6  -nstage 6 -alpha 0.05 -positive_gamma 0.5 -negtive_gamma 2 -lambda_consist 100 -lambda_mf 2 -lambda_base 1
 
 ```
 
 + For SGCLS:
 
 ```
-python test.py -mode sgcls -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.3  -rel_head gmm -obj_head linear -K 4 -tracking  
+python test.py -mode sgcls -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.3  -rel_head gmm -obj_head linear -K 4 -tracking   -nstage 6 -alpha 0.05 -positive_gamma 0.5 -negtive_gamma 2 -lambda_consist 100 -lambda_mf 2 -lambda_base 1
 
 ```
 
 + For SGDET:
 
 ```
-python test.py -mode sgdet -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.5  -rel_head gmm -obj_head linear -K 4 -tracking 
+python test.py -mode sgdet -datasize large -data_path $DATAPATH -model_path $MODELPATH -rel_mem_compute joint -rel_mem_weight_type simple -mem_fusion late -mem_feat_selection manual  -mem_feat_lambda 0.5  -rel_head gmm -obj_head linear -K 4 -tracking  -nstage 6 -alpha 0.05 -positive_gamma 0.5 -negtive_gamma 2 -lambda_consist 100 -lambda_mf 2 -lambda_base 1
 
 ```
 

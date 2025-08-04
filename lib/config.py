@@ -54,6 +54,8 @@ class Config(object):
         parser.add_argument('-enc_layer', dest='enc_layer', help='spatial encoder layer', default=1, type=int)
         parser.add_argument('-dec_layer', dest='dec_layer', help='temporal decoder layer', default=3, type=int)
 
+        parser.add_argument('-nstage', help='stage number', default=6, type=int)
+
         #logging arguments
         parser.add_argument('-log_iter', default=100, type=int)
         parser.add_argument('-no_logging', action='store_true')
@@ -89,4 +91,17 @@ class Config(object):
         parser.add_argument('-eos_coef',default=1,type=float,help='background class scaling in ce or nll loss')
         parser.add_argument('-obj_con_loss', default=None, type=str,  help='intra video visual consistency loss for objects (euc_con/info_nce)')
         parser.add_argument('-lambda_con', default=1,type=float,help='visual consistency loss coef')
+        parser.add_argument('-lambda_consist', default=100,type=float,help='vae consistency loss coef')
+        parser.add_argument('-lambda_mf', default=2,type=float,help='minority focal loss coef')
+        parser.add_argument('-lambda_base', default=1,type=float,help='minority focal loss coef')
+
+
+        #BMP arguments
+        parser.add_argument('-positive_gamma', default=0.5,type=float,help='n_gamma2 in minority focal loss')
+        parser.add_argument('-negtive_gamma', default=2,type=float,help='n_gamma1 in minority focal loss')
+        parser.add_argument('-alpha', default=0.05,type=float,help='n_gamma1 in minority focal loss')
+
+
+
+        
         return parser

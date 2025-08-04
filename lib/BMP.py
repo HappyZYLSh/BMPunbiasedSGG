@@ -20,7 +20,204 @@ from lib.draw_rectangles.draw_rectangles import draw_union_boxes
 
 EncoderLayer = nn.TransformerEncoderLayer
 Encoder = nn.TransformerEncoder
+class PrototypeVAE(nn.Module):
+    def __init__(self, rel=None, input_dim=1936, hidden_dim=256, latent_dim=40, prototype_dim=1936, alpha=0.05, tau_maj_ratio=0.5, q=3,n_stage = 6):
+        # prototype_dim: dimension of prototype features
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim   
+        self.hidden_dim1 = int(input_dim * 1.5) 
+        self.rel = rel
+        self.num_classes = {'attention': 3,
+                           'spatial': 6,
+                           'contacting': 17}
+        self.num_class = self.num_classes[self.rel]
+        self.class_counts = {
+            'attention': [55884, 77705, 12970],
+            'spatial': [2307, 24680, 97125, 18881, 28123, 4778],
+            'contacting': [1797, 1899, 1450, 1106, 161, 59470, 4057, 1338, 40733, 3724, 16614, 3379, 19667, 27, 2358, 255, 277]
+        }
+        self.class_count = self.class_counts[self.rel]
+        self.nstage = n_stage
+        
+        # Prototype converter: from probability prototypes to Gaussian prototype parameters
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, self.hidden_dim1),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim1, self.hidden_dim1),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim1, input_dim * 2)  # mu and log_sigma
+        )
+        
+        # Decoder: from Gaussian prototypes to generated samples
+        self.decoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, input_dim)  # reconstructed input
+        )
 
+        # Learnable class prototype storage (base)
+        self.prototypes_base = []
+        self.prototypes_gaussian = {
+            "attention": None,
+            "spatial": None,
+            "contacting": None
+        }
+        self.alpha = alpha  # weight for prototype update
+        self.q = q  # number of nearest majority prototypes to consider
+        self.T_maj = tau_maj_ratio  # threshold ratio for majority class
+
+        self.flag = []
+
+    def reparameterize(self, mu, log_sigma):
+        epsilon = torch.randn_like(log_sigma)
+        return mu + torch.exp(0.5 * log_sigma) * epsilon
+
+    def get_gaussian_prototypes(self):
+        """
+        Convert probability prototypes to Gaussian prototypes
+        """
+        prototypes = self.encoder(self.prototypes_base[self.rel])
+        return prototypes
+
+    def compute_euclidean_distance_matrix(self, P1, P2):
+        """
+        Compute the n1×n2 Euclidean distance matrix between two tensors P1 (n1, d) and P2 (n2, d).
+        """
+        n1, d = P1.shape
+        n2, _ = P2.shape
+        
+        S1 = torch.sum(P1 **2, dim=1) # Shape: (n1,)
+        S2 = torch.sum(P2 **2, dim=1)  # Shape: (n2,)
+        
+        S1_matrix = S1.unsqueeze(1).expand(n1, n2)  # Shape: (n1, n2)
+        S2_matrix = S2.unsqueeze(0).expand(n1, n2)  # Shape: (n1, n2)
+        
+        sum_sq = S1_matrix + S2_matrix  # Shape: (n1, n2)
+        dot_product = torch.matmul(P1, P2.transpose(1, 0))  # Shape: (n1, n2)
+        
+        squared_dist = sum_sq - 2 * dot_product  # Shape: (n1, n2)
+        distance_matrix = torch.sqrt(squared_dist + 1e-6)  # Shape: (n1, n2), with numerical stability
+        return distance_matrix
+
+    def update_minority_prototypes(self, mu_log_sigma, Cmin=None, Cmaj=None):
+        """
+        Update minority class prototypes based on nearest majority class prototypes
+        """
+        alpha = self.alpha
+        q = self.q
+
+        prototype_matrix = self.compute_euclidean_distance_matrix(
+            mu_log_sigma[Cmin, :][:, :self.input_dim],
+            mu_log_sigma[Cmaj, :][:, :self.input_dim]
+        )  # Shape: [n_minor, n_major]
+
+        # Find the nearest q majority prototypes for each minority prototype
+        Set_distance, Set_c = torch.topk(prototype_matrix, k=min(len(Cmaj), q) if len(Cmaj) < q else q, largest=False, sorted=False)
+
+        for i, cls in enumerate(Cmin):
+            x = mu_log_sigma[cls].unsqueeze(0)  # Shape: [1, d]
+            nearest_indices = [Cmaj[idx] for idx in Set_c[i, :]]
+            x_nearest = mu_log_sigma[nearest_indices]  # Shape: [q, d]
+
+            x = (1 - alpha) * x
+            nearest_Maj_index = [Cmaj[idx] for idx in Set_c[i, :]]
+            nearest_num = torch.tensor([self.class_count[idx] for idx in nearest_Maj_index], device=Set_c.device).unsqueeze(1)  # Shape: [q, 1]
+            nearest_distance = Set_distance[i].unsqueeze(1)  # Shape: [q, 1]  
+
+            # Assuming you want to use distances from the current cls to nearest majors
+            # Corrected: use the corresponding distances for this cls
+            current_distances = prototype_matrix[i, :len(nearest_indices)]  # Shape: [q]
+            current_distances = current_distances.unsqueeze(1)  # Shape: [q, 1]
+            nearest_num = torch.tensor([self.class_count[idx] for idx in nearest_Maj_index], device=current_distances.device).unsqueeze(1)  # Shape: [q, 1]
+
+            param1 = current_distances * nearest_num  # Shape: [q, 1]
+            weight = param1 / torch.sum(param1, dim=0, keepdim=True)  # Shape: [q, 1]
+            param2 = torch.sum(weight * x_nearest, dim=0).unsqueeze(0)  # Shape: [1, d]
+            param2 = alpha * param2
+            new_mu_sigma = x + param2  # Shape: [1, d]
+            mu_log_sigma[cls] = new_mu_sigma
+
+        self.prototypes_gaussian[self.rel] = mu_log_sigma  # Shape: [num_classes, input_dim*2]
+        return
+
+    def loss_function(self, mu, logvar, recon_x, recon_y):
+        x_recon = recon_x  # Shape: [B*stage, d]
+        x = self.prototypes_base[self.rel][recon_y]  # Shape: [B*stage, d]
+        recon_loss = nn.BCEWithLogitsLoss(reduction='mean')  # default is mean
+
+        kl_loss = torch.mean(0.5 * (mu.pow(2) + logvar.exp() - logvar - 1))
+    
+        return recon_loss(x_recon, x) + 0.5 * kl_loss
+
+    def forward(self, class_num):
+        mus = []
+        log_sigmas = []
+        recon_xs = []
+        recon_ys = []
+        # Step 1: Identify majority and minority classes
+        tau_maj_ratio = self.T_maj
+
+        Cmaj = []  # List of majority classes
+        Cmin = []  # List of minority classes
+        for i, num in enumerate(self.class_count):
+            # if num >= tau_maj_ratio * max(self.class_count):
+            if num >= 20000:
+
+                Cmaj.append(i)
+            else:
+                Cmin.append(i)
+        Flag = torch.zeros(1, self.num_class)
+        for mini in Cmin:
+            Flag[0, mini] = 1
+            
+
+        for _ in range(self.nstage):
+
+
+            # Step 2: Initialize Gaussian prototypes
+            prototypes = self.get_gaussian_prototypes()  # Shape: [num_classes, input_dim*2]
+            p = prototypes.detach().clone()
+
+            # Step 3: Update minority Gaussian prototypes and store in self.prototypes_gaussian
+            if Cmaj and Cmin:
+                self.update_minority_prototypes(mu_log_sigma=prototypes, Cmaj=Cmaj, Cmin=Cmin)  # Shape: [num_classes, input_dim*2]
+
+            # Step 4: Compute sampling weights for minority classes and generate class indices
+            k_sample = [tau_maj_ratio * max(self.class_count) / self.class_count[i] for i in Cmin]
+            class_ids = []
+            for k, i in zip(k_sample, Cmin):
+                k_num = int((k - 1) * class_num[i])
+                class_ids += [i for _ in range(k_num)]  # Shape: [batch_size,]
+
+            # Step 5: Sample from prototypes based on class_ids
+            mu = prototypes[class_ids, :self.input_dim]  # Shape: [batch_size, latent_dim]
+            log_sigma = prototypes[class_ids, self.input_dim:]  # Shape: [batch_size, input_dim]
+            mus.append(mu)
+            log_sigmas.append(log_sigma)
+            z = self.reparameterize(mu, log_sigma)  # Shape: [batch_size, input_dim]
+
+            # Step 6: Generate synthetic samples
+            decoder_input = z
+            recon_x = self.decoder(decoder_input)  # Shape: [batch_size, input_dim]
+            recon_y = class_ids
+            recon_xs.append(recon_x)
+            recon_ys.extend(recon_y)
+            # Ensure the shapes are consistent
+            assert recon_x.shape[0] == len(recon_y), f"recon_x.shape[0]: {recon_x.shape[0]}, len(recon_y): {len(recon_y)}"
+
+            # Step 7: Compute reconstruction loss
+        log_sigmas = torch.cat(log_sigmas,dim = 0)
+        mus = torch.cat(mus,dim = 0)
+        recon_xs = torch.cat(recon_xs,dim = 0)
+        recon_ys = recon_ys
+
+        loss = self.loss_function(mus, log_sigmas, recon_xs, recon_ys)
+        return recon_xs, mus, log_sigmas, recon_ys, Flag, loss
+    
 class PositionalEncoding(nn.Module):
 
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
@@ -462,20 +659,21 @@ class ObjectClassifier(nn.Module):
             return entry
 
 
-class TEMPURA(nn.Module):
+class BMP(nn.Module):
 
     def __init__(self, mode='sgdet',attention_class_num=None, spatial_class_num=None, \
                  contact_class_num=None, obj_classes=None,
                  rel_classes=None,enc_layer_num=None, dec_layer_num=None, obj_mem_compute=None,rel_mem_compute=None,
                  mem_fusion=None,selection=None,selection_lambda=0.5,take_obj_mem_feat=False,
-                 obj_head = 'gmm', rel_head = 'gmm',K =None, tracking=None):
+                 obj_head = 'gmm', rel_head = 'gmm',K =None, tracking=None,
+                 nstage = 6,q = 3,T_maj = [0.5,0.25,0.25],alpha = 0.7):
 
         """
         :param classes: Object classes
         :param rel_classes: Relationship classes. None if were not using rel mode
         :param mode: (sgcls, predcls, or sgdet)
         """
-        super(TEMPURA, self).__init__()
+        super(BMP, self).__init__()
         self.obj_classes = obj_classes
         self.GMM_K = K
         self.mem_fusion = mem_fusion
@@ -535,7 +733,8 @@ class TEMPURA(nn.Module):
                                               embed_dim=1936, nhead=8,
                                               dim_feedforward=2048, dropout=0.1, mode='latter', 
                                               mem_compute=rel_mem_compute, mem_fusion=mem_fusion,
-                                              selection=selection, selection_lambda=self.selection_lambda)
+                                              selection=selection, selection_lambda=self.selection_lambda,
+                                              )
 
         if rel_head == 'gmm':
             self.a_rel_compress = GMM_head(hid_dim=1936, num_classes=self.attention_class_num, rel_type='attention', k=self.GMM_K)
@@ -546,6 +745,12 @@ class TEMPURA(nn.Module):
             self.a_rel_compress = nn.Linear(1936, self.attention_class_num)
             self.s_rel_compress = nn.Linear(1936, self.spatial_class_num)
             self.c_rel_compress = nn.Linear(1936, self.contact_class_num)
+        
+        # PrototypeVAE
+        self.nstage = nstage
+        self.a_PrototypeVAE = PrototypeVAE(rel="attention",alpha=alpha,tau_maj_ratio=T_maj[0],q=q,nstage = nstage)
+        self.s_PrototypeVAE = PrototypeVAE(rel="spatial",alpha=alpha,tau_maj_ratio=T_maj[1],q=q,nstage = nstage)
+        self.c_PrototypeVAE = PrototypeVAE(rel="contacting",alpha=alpha,tau_maj_ratio=T_maj[2],q=q,nstage = nstage)
 
     def forward(self, entry, phase='train',unc=False):
 
@@ -581,12 +786,86 @@ class TEMPURA(nn.Module):
         
         entry["rel_features"] = rel_features
         entry['rel_mem_features'] = mem_features
+        if self.a_PrototypeVAE.prototypes_base and self.s_PrototypeVAE.prototypes_base and self.c_PrototypeVAE.prototypes_base:
+            attention_label = torch.tensor(entry["attention_gt"], dtype=torch.long).squeeze()
+            # bce loss
+            spatial_label = torch.zeros([len(entry["spatial_gt"]), 6], dtype=torch.float32)
+            contact_label = torch.zeros([len(entry["contacting_gt"]), 17], dtype=torch.float32)
+            for i in range(len(entry["spatial_gt"])):
+                spatial_label[i, entry["spatial_gt"][i]] = 1
+                contact_label[i, entry["contacting_gt"][i]] = 1
+
+            class_num = {
+                "attention":[],
+                "spatial":[],
+                "contacting":[],
+            }
+
+            for rel,label,class_count in zip(["attention","spatial","contacting"],[attention_label,spatial_label,contact_label],[3,6,17]):
+                for i in range(class_count):
+                    if rel=="attention":
+                        class_num[rel] = class_num[rel]+[torch.sum(torch.eq(label,i)).item()]
+                    else:
+                        class_num[rel] = class_num[rel]+[torch.sum(label[:,i]).item()]
+            
+            recon_x1, mu1, log_sigma1,recon_y1,Flag1,loss1   = self.a_PrototypeVAE(class_num = class_num["attention"])
+            
+            recon_x2, mu2, log_sigma2,recon_y2,Flag2,loss2 = self.s_PrototypeVAE(class_num = class_num["spatial"])
+
+            recon_x3, mu3, log_sigma3,recon_y3,Flag3,loss3 = self.c_PrototypeVAE(class_num = class_num["contacting"])
+            entry["attention_maj"] = 1-Flag1
+            entry["spatial_maj"] = 1-Flag2
+            entry["contacting_maj"] = 1-Flag3
+
+
+            if len(recon_y1)>0:
+                # x1 = 
+                entry["recon_attention_f"] = recon_x1
+                entry["recon_attention_gt"] = recon_y1
+                entry["recon_attention_log_sigma"] = log_sigma1
+                entry["recon_attention_mu"] = mu1  
+                entry["flag1"] = True
+                entry["loss1"] = loss1
+            else:
+                entry["flag1"] = False
+
+
+            if len(recon_y2)>0:
+                entry["recon_spatial_f"] = recon_x2
+                entry["recon_spatial_mu"] = mu2
+                entry["recon_spatial_gt"] = [ [y] for y in recon_y2]
+                entry["recon_spatial_log_sigma"] = log_sigma2
+                entry["flag2"] = True
+                entry["loss2"] = loss2
+            else:
+                entry["flag2"] = False
+
+            if len(recon_y3)>0:
+                entry["recon_contacting_f"] = recon_x3
+                entry["recon_contacting_mu"] = mu3
+                entry["recon_contacting_log_sigma"] = log_sigma3
+                entry["recon_contacting_gt"] = [ [y] for y in recon_y3]
+                entry["flag3"] = True
+                entry["loss3"] = loss3
+            else:
+                entry["flag3"] = False
+
 
         if self.rel_head == 'gmm':
             if not unc:
                 entry["attention_distribution"] = self.a_rel_compress(global_output,phase,unc)
                 entry["spatial_distribution"] = self.s_rel_compress(global_output,phase,unc)
                 entry["contacting_distribution"] = self.c_rel_compress(global_output,phase,unc)
+                if self.a_PrototypeVAE.prototypes_base and self.s_PrototypeVAE.prototypes_base and self.c_PrototypeVAE.prototypes_base:
+                    if len(recon_y1)>0:
+
+                        entry["recon_attention_distribution"] = self.a_rel_compress(recon_x1,phase,unc)
+                    if len(recon_y2)>0:
+
+                        entry["recon_spatial_distribution"] = self.s_rel_compress(recon_x2,phase,unc)
+                    if len(recon_y3)>0:
+
+                        entry["recon_contacting_distribution"] = self.c_rel_compress(recon_x3,phase,unc)
             else:
                 entry["attention_al_uc"], entry["attention_ep_uc"] = self.a_rel_compress(global_output,phase,unc)
                 entry["spatial_al_uc"], entry["spatial_ep_uc"] = self.s_rel_compress(global_output,phase,unc)

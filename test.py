@@ -10,7 +10,7 @@ from dataloader.action_genome import AG, cuda_collate_fn
 from lib.config import Config
 from lib.evaluation_recall import BasicSceneGraphEvaluator
 from lib.object_detector import detector
-from lib.tempura import TEMPURA
+from BMPunbiasedSGG.lib.BMP import BMP
 from lib.ds_track import get_sequence
 
 conf = Config()
@@ -27,7 +27,7 @@ object_detector = detector(train=False, object_classes=AG_dataset.object_classes
 object_detector.eval()
 
 
-model = TEMPURA(mode=conf.mode,
+model = BMP(mode=conf.mode,
                attention_class_num=len(AG_dataset.attention_relationships),
                spatial_class_num=len(AG_dataset.spatial_relationships),
                contact_class_num=len(AG_dataset.contacting_relationships),
