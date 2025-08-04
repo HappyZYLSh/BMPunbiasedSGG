@@ -100,6 +100,7 @@ We would like to acknowledge the authors of the following repositories from wher
 + [Yang&#39;s repository](https://github.com/jwyang/faster-rcnn.pytorch)
 + [Zellers&#39; repository](https://github.com/rowanz/neural-motifs)
 + [Cong&#39;s repository](https://github.com/yrcong/STTran.git)
++ [Sayak&#39;s repository](https://github.com/sayaknag/unbiasedSGG.git)
 
 ## Citation
 
